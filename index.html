@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Cirium Flight Data — Filter & Download</title>
 <style>
-  :root { color-scheme: light; --navy:#1F3864; --blue:#2E75B6; --line:#d9e2f3; --bg:#f7f9fc; --ok:#1a7f4b; }
+  :root { color-scheme: light; --navy:#1F3864; --blue:#2E75B6; --line:#d9e2f3; --bg:#f7f9fc; }
   * { box-sizing: border-box; }
   body { margin:0; font-family: -apple-system, Segoe UI, Arial, sans-serif; color:#1a1a1a; background:var(--bg); }
   header { background:var(--navy); color:#fff; padding:20px 28px; }
@@ -16,10 +16,25 @@
   .controls { display:flex; flex-wrap:wrap; gap:16px; align-items:flex-end; }
   .field { display:flex; flex-direction:column; gap:5px; }
   .field label { font-size:12px; font-weight:600; color:var(--navy); }
-  .field input, .field select { padding:8px 10px; border:1px solid #c9d3e6; border-radius:7px; font-size:14px; min-width:150px; background:#fff; }
+  .field input[type=date] { padding:8px 10px; border:1px solid #c9d3e6; border-radius:7px; font-size:14px; background:#fff; }
   button { cursor:pointer; border:none; border-radius:8px; font-size:14px; font-weight:600; padding:10px 16px; }
   .apply { background:var(--blue); color:#fff; }
   .apply:hover { background:#255f96; }
+
+  /* multi-select */
+  .ms { position:relative; min-width:180px; }
+  .ms-head { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:8px 10px; border:1px solid #c9d3e6; border-radius:7px; background:#fff; font-size:14px; cursor:pointer; }
+  .ms-head .ms-caret { color:#889; font-size:11px; }
+  .ms-panel { position:absolute; z-index:20; top:calc(100% + 4px); left:0; width:260px; max-width:80vw; background:#fff; border:1px solid #c9d3e6; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.12); padding:8px; }
+  .ms-search { width:100%; padding:7px 9px; border:1px solid #d7deea; border-radius:6px; font-size:13px; margin-bottom:6px; }
+  .ms-acts { display:flex; gap:8px; margin-bottom:6px; }
+  .ms-acts button { flex:1; background:#eef3fb; color:var(--navy); padding:5px; font-size:12px; }
+  .ms-acts button:hover { background:#e0e9f7; }
+  .ms-list { max-height:220px; overflow:auto; }
+  .ms-opt { display:flex; align-items:center; gap:8px; padding:5px 6px; font-size:13px; border-radius:5px; cursor:pointer; }
+  .ms-opt:hover { background:#f3f6fc; }
+  .ms-opt input { margin:0; }
+
   .stats { display:flex; gap:28px; flex-wrap:wrap; margin:4px 0 2px; }
   .stat .n { font-size:28px; font-weight:700; color:var(--navy); line-height:1; }
   .stat .l { font-size:12px; color:#556; margin-top:4px; }
@@ -43,7 +58,7 @@
 <body>
 <header>
   <h1>Cirium Flight Data — Filter &amp; Download</h1>
-  <p>Live from the Cirium Sky Stream feed. Pick a date range, then download the data as CSV. Read-only.</p>
+  <p>Live from the Cirium Sky Stream feed. Pick a date range (and optionally carriers / airports), then download as CSV. Read-only.</p>
 </header>
 
 <div class="wrap">
@@ -58,12 +73,16 @@
         <input type="date" id="end">
       </div>
       <div class="field">
-        <label for="carrier">Carrier (optional)</label>
-        <select id="carrier"><option value="">All carriers</option></select>
+        <label>Carriers</label>
+        <div class="ms" id="ms-carrier"></div>
       </div>
       <div class="field">
-        <label for="airport">Airport — dep or arr (optional)</label>
-        <select id="airport"><option value="">All airports</option></select>
+        <label>Departure airport(s)</label>
+        <div class="ms" id="ms-dep"></div>
+      </div>
+      <div class="field">
+        <label>Arrival airport(s)</label>
+        <div class="ms" id="ms-arr"></div>
       </div>
       <button class="apply" id="apply">Apply filters</button>
     </div>
@@ -115,10 +134,78 @@ const REST = SUPABASE_URL + "/rest/v1/";
 const HDRS = { apikey: ANON, Authorization: "Bearer " + ANON };
 const PAGE = 1000;
 
+const PARSED_COLS = ["id","ingested_at","received_at","event_id","flight_id","flight_number","call_sign","status","service_type","aircraft_icao","registration","aircraft_address","operating_carrier_iata","operating_carrier_icao","marketing_carrier_iata","marketing_carrier_icao","dep_airport_iata","dep_airport_icao","dep_gate_scheduled","dep_gate_estimated","dep_runway_estimated","dep_gate","dep_terminal","arr_airport_iata","arr_airport_icao","arr_gate_scheduled","arr_gate_estimated","arr_runway_estimated","arr_gate","baggage_claim","scheduled_equipment","scheduled_dep_utc","scheduled_arr_utc","estimated_dep_utc","estimated_arr_utc","actual_dep_utc","actual_arr_utc","tail_number","message_type","published_at","arr_terminal","aircraft_type","flight_key"];
+
 const $ = (id) => document.getElementById(id);
 const setStatus = (m, err) => { const e=$("status"); e.textContent=m; e.className = err ? "err" : "muted"; };
 const setDl = (m, err) => { const e=$("dlstatus"); e.textContent=m; e.className = err ? "err" : "muted"; };
 
+/* ---------- reusable checkbox multi-select ---------- */
+function MultiSelect(rootId, allLabel){
+  const root = $(rootId);
+  root.innerHTML =
+    '<div class="ms-head"><span class="ms-label"></span><span class="ms-caret">&#9662;</span></div>' +
+    '<div class="ms-panel" hidden>' +
+      '<input class="ms-search" type="text" placeholder="Search…">' +
+      '<div class="ms-acts"><button type="button" data-act="all">Select all</button><button type="button" data-act="clear">Clear</button></div>' +
+      '<div class="ms-list"></div>' +
+    '</div>';
+  const head = root.querySelector(".ms-head");
+  const label = root.querySelector(".ms-label");
+  const panel = root.querySelector(".ms-panel");
+  const search = root.querySelector(".ms-search");
+  const list = root.querySelector(".ms-list");
+  let options = [];
+  const selected = new Set();
+
+  function updateLabel(){
+    if (selected.size === 0) label.textContent = allLabel;
+    else if (selected.size === 1) label.textContent = [...selected][0];
+    else label.textContent = selected.size + " selected";
+  }
+  function render(){
+    const q = search.value.trim().toUpperCase();
+    list.innerHTML = "";
+    for (const opt of options){
+      if (q && !opt.toUpperCase().includes(q)) continue;
+      const row = document.createElement("label");
+      row.className = "ms-opt";
+      const cb = document.createElement("input");
+      cb.type = "checkbox"; cb.value = opt; cb.checked = selected.has(opt);
+      cb.addEventListener("change", () => { cb.checked ? selected.add(opt) : selected.delete(opt); updateLabel(); });
+      row.appendChild(cb);
+      const span = document.createElement("span"); span.textContent = opt; row.appendChild(span);
+      list.appendChild(row);
+    }
+  }
+  head.addEventListener("click", () => {
+    document.querySelectorAll(".ms-panel").forEach(p => { if (p !== panel) p.hidden = true; });
+    panel.hidden = !panel.hidden;
+    if (!panel.hidden) search.focus();
+  });
+  search.addEventListener("input", render);
+  root.querySelector('[data-act="all"]').addEventListener("click", () => {
+    const q = search.value.trim().toUpperCase();
+    for (const opt of options) if (!q || opt.toUpperCase().includes(q)) selected.add(opt);
+    render(); updateLabel();
+  });
+  root.querySelector('[data-act="clear"]').addEventListener("click", () => { selected.clear(); render(); updateLabel(); });
+
+  updateLabel();
+  return {
+    setOptions(list2){ options = list2.slice(); render(); },
+    getValues(){ return [...selected]; },
+  };
+}
+document.addEventListener("click", (e) => {
+  document.querySelectorAll(".ms").forEach(ms => { if (!ms.contains(e.target)) ms.querySelector(".ms-panel").hidden = true; });
+});
+
+const CARRIER = MultiSelect("ms-carrier", "All carriers");
+const DEP = MultiSelect("ms-dep", "All departure airports");
+const ARR = MultiSelect("ms-arr", "All arrival airports");
+
+/* ---------- dates ---------- */
 function fmt(d){ return d.toISOString().slice(0,10); }
 function initDates(){
   const today = new Date();
@@ -127,48 +214,77 @@ function initDates(){
   $("start").value = fmt(start);
   $("end").value = fmt(end);
 }
+function startISO(){ const s=$("start").value; return s ? s + "T00:00:00Z" : null; }
+function endISO(){ const e=$("end").value; if(!e) return null; const d=new Date(e); d.setDate(d.getDate()+1); return fmt(d) + "T00:00:00Z"; }
 
-// Build the PostgREST filter query string shared by all queries.
+/* ---------- filters ---------- */
+function inParam(field, vals){ return vals.length ? field + "=in.(" + vals.map(encodeURIComponent).join(",") + ")" : null; }
 function filterQS(){
-  const start = $("start").value, end = $("end").value;
   const parts = [];
-  if (start) parts.push("scheduled_dep_utc=gte." + start + "T00:00:00Z");
-  if (end)   { const e=new Date(end); e.setDate(e.getDate()+1); parts.push("scheduled_dep_utc=lt." + fmt(e) + "T00:00:00Z"); }
-  const carrier = $("carrier").value;
-  if (carrier) parts.push("operating_carrier_iata=eq." + encodeURIComponent(carrier));
-  const ap = $("airport").value;
-  if (ap) parts.push("or=(dep_airport_iata.eq." + encodeURIComponent(ap) + ",arr_airport_iata.eq." + encodeURIComponent(ap) + ")");
+  const s=startISO(), e=endISO();
+  if (s) parts.push("scheduled_dep_utc=gte." + s);
+  if (e) parts.push("scheduled_dep_utc=lt." + e);
+  [ inParam("operating_carrier_iata", CARRIER.getValues()),
+    inParam("dep_airport_iata", DEP.getValues()),
+    inParam("arr_airport_iata", ARR.getValues()) ].forEach(p => { if (p) parts.push(p); });
   return parts.join("&");
 }
+function arrOrNull(a){ return a.length ? a : null; }
+function rpcBody(){
+  return JSON.stringify({ p_start:startISO(), p_end:endISO(),
+    p_carriers:arrOrNull(CARRIER.getValues()), p_dep:arrOrNull(DEP.getValues()), p_arr:arrOrNull(ARR.getValues()) });
+}
+function callRpc(fn){
+  return fetch(REST + "rpc/" + fn, { method:"POST", headers: Object.assign({}, HDRS, {"Content-Type":"application/json"}), body: rpcBody() });
+}
 
-async function getCount(table){
-  const url = REST + table + "?" + filterQS() + "&limit=1";
+async function getRawCount(){
+  const url = REST + "flight_events?" + filterQS() + "&limit=1";
   const r = await fetch(url, { headers: Object.assign({}, HDRS, { Prefer:"count=exact", "Range-Unit":"items", Range:"0-0" }) });
-  if (!r.ok) throw new Error(table + ": " + r.status + " " + (await r.text()));
-  const cr = r.headers.get("content-range") || "";      // e.g. "0-0/25580"
+  if (!r.ok) throw new Error("count: " + r.status + " " + (await r.text()));
+  const cr = r.headers.get("content-range") || "";
   const total = cr.split("/")[1];
   return total ? parseInt(total,10) : 0;
 }
 
-async function fetchAllPaged(table, select, orderCol){
+async function fetchEventsPaged(select){
   let out = [], offset = 0;
   for(;;){
-    const url = REST + table + "?" + filterQS() + "&select=" + select + "&order=" + orderCol + "&limit=" + PAGE + "&offset=" + offset;
+    const url = REST + "flight_events?" + filterQS() + "&select=" + select + "&order=id.asc&limit=" + PAGE + "&offset=" + offset;
     const r = await fetch(url, { headers: HDRS });
-    if (!r.ok) throw new Error(table + ": " + r.status + " " + (await r.text()));
+    if (!r.ok) throw new Error("fetch: " + r.status + " " + (await r.text()));
     const rows = await r.json();
     out = out.concat(rows);
-    setDl("Fetching… " + out.length + " rows");
+    setDl("Fetching… " + out.length.toLocaleString() + " rows");
     if (rows.length < PAGE) break;
     offset += PAGE;
   }
   return out;
 }
 
-function toCSV(rows, dropCols){
+function lastKnown(rows){
+  const groups = {};
+  for (const r of rows){ if (r.flight_key == null) continue; (groups[r.flight_key] ||= []).push(r); }
+  const out = [];
+  for (const key in groups){
+    const g = groups[key].slice().sort((a,b) => (a.received_at < b.received_at ? 1 : (a.received_at > b.received_at ? -1 : 0)));
+    const times = groups[key].map(x => x.received_at).filter(Boolean).sort();
+    const merged = { flight_key: key, first_observed: times[0] || null, last_observed: times[times.length-1] || null, obs_count: g.length };
+    for (const c of PARSED_COLS){
+      if (c === "flight_key") continue;
+      let val = null;
+      for (const row of g){ const v = row[c]; if (v !== null && v !== undefined && v !== ""){ val = v; break; } }
+      merged[c] = val;
+    }
+    out.push(merged);
+  }
+  out.sort((a,b) => (a.flight_key < b.flight_key ? -1 : 1));
+  return out;
+}
+
+function toCSV(rows){
   if (!rows.length) return "";
-  const drop = new Set(dropCols||[]);
-  const cols = Object.keys(rows[0]).filter(c => !drop.has(c));
+  const cols = Object.keys(rows[0]);
   const esc = (v) => {
     if (v === null || v === undefined) return "";
     if (typeof v === "object") v = JSON.stringify(v);
@@ -179,7 +295,6 @@ function toCSV(rows, dropCols){
   for (const row of rows) lines.push(cols.map(c => esc(row[c])).join(","));
   return lines.join("\r\n");
 }
-
 function downloadCSV(text, name){
   const blob = new Blob([text], { type:"text/csv;charset=utf-8;" });
   const a = document.createElement("a");
@@ -188,21 +303,30 @@ function downloadCSV(text, name){
   setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 500);
 }
 
+function selectionSummary(){
+  const bits = [];
+  const c = CARRIER.getValues(), d = DEP.getValues(), a = ARR.getValues();
+  if (c.length) bits.push("carriers: " + c.join("/"));
+  if (d.length) bits.push("from: " + d.join("/"));
+  if (a.length) bits.push("to: " + a.join("/"));
+  return bits.length ? " · " + bits.join(" · ") : "";
+}
+
 async function refreshSummary(){
-  setStatus("Counting…");
+  setStatus("Loading…");
   try {
-    const [ev, fl] = await Promise.all([ getCount("flight_events"), getCount("flights_last_known") ]);
-    $("cntEvents").textContent = ev.toLocaleString();
-    $("cntFlights").textContent = fl.toLocaleString();
+    const [raw, uniqRes] = await Promise.all([ getRawCount(), callRpc("flights_count_range") ]);
+    $("cntEvents").textContent = raw.toLocaleString();
+    const uniq = uniqRes.ok ? await uniqRes.json() : 0;
+    $("cntFlights").textContent = Number(uniq).toLocaleString();
     await loadPreview();
-    setStatus("Showing " + $("start").value + " → " + $("end").value + (($("carrier").value)?(" · "+$("carrier").value):"") + (($("airport").value)?(" · "+$("airport").value):""));
+    setStatus("Showing " + $("start").value + " → " + $("end").value + selectionSummary());
   } catch(e){ setStatus(e.message, true); }
 }
 
 async function loadPreview(){
   const cols = ["operating_carrier_iata","flight_number","dep_airport_iata","arr_airport_iata","scheduled_dep_utc","status","registration","aircraft_type","obs_count"];
-  const url = REST + "flights_last_known?" + filterQS() + "&select=" + cols.join(",") + "&order=scheduled_dep_utc.asc&limit=50";
-  const r = await fetch(url, { headers: HDRS });
+  const r = await callRpc("flights_preview_range");
   const rows = r.ok ? await r.json() : [];
   const thead = $("preview").querySelector("thead");
   const tbody = $("preview").querySelector("tbody");
@@ -218,16 +342,18 @@ async function loadPreview(){
 async function handleDownload(kind, btn){
   btn.disabled = true;
   try {
-    let rows, name, drop;
+    let rows, name;
     if (kind === "raw"){
-      rows = await fetchAllPaged("flight_events", "*", "id.asc"); name = "cirium_raw_messages.csv"; drop = [];
+      rows = await fetchEventsPaged("*"); name = "cirium_raw_messages.csv";
     } else if (kind === "parsed"){
-      rows = await fetchAllPaged("flight_events", "*", "id.asc"); name = "cirium_all_flight_entries.csv"; drop = ["raw_payload"];
+      rows = await fetchEventsPaged(PARSED_COLS.join(",")); name = "cirium_all_flight_entries.csv";
     } else {
-      rows = await fetchAllPaged("flights_last_known", "*", "flight_key.asc"); name = "cirium_unique_flights.csv"; drop = [];
+      setDl("Fetching messages to build unique set…");
+      const msgs = await fetchEventsPaged(PARSED_COLS.join(","));
+      rows = lastKnown(msgs); name = "cirium_unique_flights.csv";
     }
     if (!rows.length){ setDl("No rows in the selected range.", true); return; }
-    downloadCSV(toCSV(rows, drop), name);
+    downloadCSV(toCSV(rows), name);
     setDl("Downloaded " + rows.length.toLocaleString() + " rows → " + name);
   } catch(e){ setDl(e.message, true); }
   finally { btn.disabled = false; }
@@ -239,8 +365,8 @@ async function populateFilters(){
       fetch(REST + "rpc/ui_carriers", { method:"POST", headers: Object.assign({}, HDRS, {"Content-Type":"application/json"}), body:"{}" }),
       fetch(REST + "rpc/ui_airports", { method:"POST", headers: Object.assign({}, HDRS, {"Content-Type":"application/json"}), body:"{}" }),
     ]);
-    if (cr.ok){ const list = await cr.json(); for(const x of list){ const o=document.createElement("option"); o.value=o.textContent=x.code||x; $("carrier").appendChild(o);} }
-    if (ap.ok){ const list = await ap.json(); for(const x of list){ const o=document.createElement("option"); o.value=o.textContent=x.code||x; $("airport").appendChild(o);} }
+    if (cr.ok){ const list = (await cr.json()).map(x => x.code || x); CARRIER.setOptions(list); }
+    if (ap.ok){ const list = (await ap.json()).map(x => x.code || x); DEP.setOptions(list); ARR.setOptions(list); }
   } catch(e){ /* dropdowns optional */ }
 }
 
