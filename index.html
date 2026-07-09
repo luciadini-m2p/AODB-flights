@@ -73,7 +73,7 @@
         <input type="date" id="end">
       </div>
       <div class="field">
-        <label>Carriers</label>
+        <label>Carriers (marketing)</label>
         <div class="ms" id="ms-carrier"></div>
       </div>
       <div class="field">
@@ -158,8 +158,9 @@ function MultiSelect(rootId, allLabel){
   let options = [];
   const selected = new Set();
 
+  function isAll(){ return options.length > 0 && selected.size === options.length; }
   function updateLabel(){
-    if (selected.size === 0) label.textContent = allLabel;
+    if (selected.size === 0 || isAll()) label.textContent = allLabel;
     else if (selected.size === 1) label.textContent = [...selected][0];
     else label.textContent = selected.size + " selected";
   }
@@ -194,14 +195,14 @@ function MultiSelect(rootId, allLabel){
   updateLabel();
   return {
     setOptions(list2){ options = list2.slice(); render(); },
-    getValues(){ return [...selected]; },
+    getValues(){ return isAll() ? [] : [...selected]; },
   };
 }
 document.addEventListener("click", (e) => {
   document.querySelectorAll(".ms").forEach(ms => { if (!ms.contains(e.target)) ms.querySelector(".ms-panel").hidden = true; });
 });
 
-const CARRIER = MultiSelect("ms-carrier", "All carriers");
+const CARRIER = MultiSelect("ms-carrier", "All marketing carriers");
 const DEP = MultiSelect("ms-dep", "All departure airports");
 const ARR = MultiSelect("ms-arr", "All arrival airports");
 
@@ -224,7 +225,7 @@ function filterQS(){
   const s=startISO(), e=endISO();
   if (s) parts.push("scheduled_dep_utc=gte." + s);
   if (e) parts.push("scheduled_dep_utc=lt." + e);
-  [ inParam("operating_carrier_iata", CARRIER.getValues()),
+  [ inParam("marketing_carrier_iata", CARRIER.getValues()),
     inParam("dep_airport_iata", DEP.getValues()),
     inParam("arr_airport_iata", ARR.getValues()) ].forEach(p => { if (p) parts.push(p); });
   return parts.join("&");
@@ -325,12 +326,12 @@ async function refreshSummary(){
 }
 
 async function loadPreview(){
-  const cols = ["operating_carrier_iata","flight_number","dep_airport_iata","arr_airport_iata","scheduled_dep_utc","status","registration","aircraft_type","obs_count"];
+  const cols = ["marketing_carrier_iata","operating_carrier_iata","flight_number","dep_airport_iata","arr_airport_iata","scheduled_dep_utc","status","registration","aircraft_type","obs_count"];
   const r = await callRpc("flights_preview_range");
   const rows = r.ok ? await r.json() : [];
   const thead = $("preview").querySelector("thead");
   const tbody = $("preview").querySelector("tbody");
-  const heads = ["Carrier","Flight","From","To","Sched dep (UTC)","Status","Reg","Aircraft","Msgs"];
+  const heads = ["Mkt","Operator","Flight","From","To","Sched dep (UTC)","Status","Reg","Aircraft","Msgs"];
   thead.innerHTML = "<tr>" + heads.map(h=>"<th>"+h+"</th>").join("") + "</tr>";
   tbody.innerHTML = rows.map(x => "<tr>" + cols.map(c => {
     let v = x[c]==null ? "" : x[c];
