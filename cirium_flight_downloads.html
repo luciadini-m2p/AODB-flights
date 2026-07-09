@@ -1,0 +1,255 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cirium Flight Data — Filter & Download</title>
+<style>
+  :root { color-scheme: light; --navy:#1F3864; --blue:#2E75B6; --line:#d9e2f3; --bg:#f7f9fc; --ok:#1a7f4b; }
+  * { box-sizing: border-box; }
+  body { margin:0; font-family: -apple-system, Segoe UI, Arial, sans-serif; color:#1a1a1a; background:var(--bg); }
+  header { background:var(--navy); color:#fff; padding:20px 28px; }
+  header h1 { margin:0; font-size:20px; }
+  header p { margin:6px 0 0; font-size:13px; opacity:.85; }
+  .wrap { max-width:1100px; margin:0 auto; padding:22px 28px 60px; }
+  .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:18px 20px; margin-bottom:18px; }
+  .controls { display:flex; flex-wrap:wrap; gap:16px; align-items:flex-end; }
+  .field { display:flex; flex-direction:column; gap:5px; }
+  .field label { font-size:12px; font-weight:600; color:var(--navy); }
+  .field input, .field select { padding:8px 10px; border:1px solid #c9d3e6; border-radius:7px; font-size:14px; min-width:150px; background:#fff; }
+  button { cursor:pointer; border:none; border-radius:8px; font-size:14px; font-weight:600; padding:10px 16px; }
+  .apply { background:var(--blue); color:#fff; }
+  .apply:hover { background:#255f96; }
+  .stats { display:flex; gap:28px; flex-wrap:wrap; margin:4px 0 2px; }
+  .stat .n { font-size:28px; font-weight:700; color:var(--navy); line-height:1; }
+  .stat .l { font-size:12px; color:#556; margin-top:4px; }
+  .dl { display:flex; flex-wrap:wrap; gap:14px; }
+  .dl .box { flex:1 1 280px; border:1px solid var(--line); border-radius:9px; padding:14px; background:#fbfcfe; }
+  .dl .box h3 { margin:0 0 6px; font-size:14px; color:var(--navy); }
+  .dl .box p { margin:0 0 12px; font-size:12px; color:#556; line-height:1.4; min-height:34px; }
+  .dl .box button { width:100%; background:var(--navy); color:#fff; }
+  .dl .box button:hover { background:#16294a; }
+  .dl .box button:disabled { background:#9aa7bd; cursor:progress; }
+  table { border-collapse:collapse; width:100%; font-size:12.5px; }
+  th, td { text-align:left; padding:7px 9px; border-bottom:1px solid #eef1f6; white-space:nowrap; }
+  th { color:var(--navy); border-bottom:2px solid var(--line); position:sticky; top:0; background:#fff; }
+  .tablewrap { max-height:420px; overflow:auto; border:1px solid var(--line); border-radius:8px; }
+  .muted { color:#667; font-size:12px; }
+  .err { color:#b00020; font-size:13px; }
+  .pill { display:inline-block; padding:2px 8px; border-radius:20px; font-size:11px; background:#eef3fb; color:var(--navy); }
+  h2 { font-size:15px; color:var(--navy); margin:2px 0 12px; border-bottom:2px solid var(--line); padding-bottom:6px;}
+</style>
+</head>
+<body>
+<header>
+  <h1>Cirium Flight Data — Filter &amp; Download</h1>
+  <p>Live from the Cirium Sky Stream feed. Pick a date range, then download the data as CSV. Read-only.</p>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <div class="controls">
+      <div class="field">
+        <label for="start">From (scheduled departure)</label>
+        <input type="date" id="start">
+      </div>
+      <div class="field">
+        <label for="end">To (inclusive)</label>
+        <input type="date" id="end">
+      </div>
+      <div class="field">
+        <label for="carrier">Carrier (optional)</label>
+        <select id="carrier"><option value="">All carriers</option></select>
+      </div>
+      <div class="field">
+        <label for="airport">Airport — dep or arr (optional)</label>
+        <select id="airport"><option value="">All airports</option></select>
+      </div>
+      <button class="apply" id="apply">Apply filters</button>
+    </div>
+    <div id="status" class="muted" style="margin-top:12px;">Loading…</div>
+  </div>
+
+  <div class="card">
+    <h2>Summary for selected range</h2>
+    <div class="stats">
+      <div class="stat"><div class="n" id="cntEvents">—</div><div class="l">raw messages</div></div>
+      <div class="stat"><div class="n" id="cntFlights">—</div><div class="l">unique flights</div></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Download CSV</h2>
+    <div class="dl">
+      <div class="box">
+        <h3>1 · Raw messages (as-is)</h3>
+        <p>Every message in range, including the original <span class="pill">raw_payload</span>. The unfiltered feed.</p>
+        <button data-kind="raw">Download raw CSV</button>
+      </div>
+      <div class="box">
+        <h3>2 · All flight entries (parsed)</h3>
+        <p>Every message in range, parsed columns only (no raw_payload). Easier to read in Excel.</p>
+        <button data-kind="parsed">Download parsed CSV</button>
+      </div>
+      <div class="box">
+        <h3>3 · Unique flights (last known)</h3>
+        <p>One row per flight — the latest, most complete value of each field across its messages.</p>
+        <button data-kind="unique">Download unique CSV</button>
+      </div>
+    </div>
+    <div id="dlstatus" class="muted" style="margin-top:12px;"></div>
+  </div>
+
+  <div class="card">
+    <h2>Preview — unique flights (first 50)</h2>
+    <div class="tablewrap"><table id="preview"><thead></thead><tbody></tbody></table></div>
+  </div>
+
+  <p class="muted">Data source: Cirium Sky Stream → Supabase. This page has read-only access. Reload to refresh.</p>
+</div>
+
+<script>
+const SUPABASE_URL = "https://cqiglfxbmilumuupcfbe.supabase.co";
+const ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNxaWdsZnhibWlsdW11dXBjZmJlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM1MzA3MTUsImV4cCI6MjA5OTEwNjcxNX0.Nci335D5aU1PAFFN9Qb8KDLsEMh_dFScUJs7qiIiRbE";
+const REST = SUPABASE_URL + "/rest/v1/";
+const HDRS = { apikey: ANON, Authorization: "Bearer " + ANON };
+const PAGE = 1000;
+
+const $ = (id) => document.getElementById(id);
+const setStatus = (m, err) => { const e=$("status"); e.textContent=m; e.className = err ? "err" : "muted"; };
+const setDl = (m, err) => { const e=$("dlstatus"); e.textContent=m; e.className = err ? "err" : "muted"; };
+
+function fmt(d){ return d.toISOString().slice(0,10); }
+function initDates(){
+  const today = new Date();
+  const start = new Date(today); start.setDate(today.getDate()-7);
+  const end = new Date(today); end.setDate(today.getDate()+7);
+  $("start").value = fmt(start);
+  $("end").value = fmt(end);
+}
+
+// Build the PostgREST filter query string shared by all queries.
+function filterQS(){
+  const start = $("start").value, end = $("end").value;
+  const parts = [];
+  if (start) parts.push("scheduled_dep_utc=gte." + start + "T00:00:00Z");
+  if (end)   { const e=new Date(end); e.setDate(e.getDate()+1); parts.push("scheduled_dep_utc=lt." + fmt(e) + "T00:00:00Z"); }
+  const carrier = $("carrier").value;
+  if (carrier) parts.push("operating_carrier_iata=eq." + encodeURIComponent(carrier));
+  const ap = $("airport").value;
+  if (ap) parts.push("or=(dep_airport_iata.eq." + encodeURIComponent(ap) + ",arr_airport_iata.eq." + encodeURIComponent(ap) + ")");
+  return parts.join("&");
+}
+
+async function getCount(table){
+  const url = REST + table + "?" + filterQS() + "&limit=1";
+  const r = await fetch(url, { headers: Object.assign({}, HDRS, { Prefer:"count=exact", "Range-Unit":"items", Range:"0-0" }) });
+  if (!r.ok) throw new Error(table + ": " + r.status + " " + (await r.text()));
+  const cr = r.headers.get("content-range") || "";      // e.g. "0-0/25580"
+  const total = cr.split("/")[1];
+  return total ? parseInt(total,10) : 0;
+}
+
+async function fetchAllPaged(table, select, orderCol){
+  let out = [], offset = 0;
+  for(;;){
+    const url = REST + table + "?" + filterQS() + "&select=" + select + "&order=" + orderCol + "&limit=" + PAGE + "&offset=" + offset;
+    const r = await fetch(url, { headers: HDRS });
+    if (!r.ok) throw new Error(table + ": " + r.status + " " + (await r.text()));
+    const rows = await r.json();
+    out = out.concat(rows);
+    setDl("Fetching… " + out.length + " rows");
+    if (rows.length < PAGE) break;
+    offset += PAGE;
+  }
+  return out;
+}
+
+function toCSV(rows, dropCols){
+  if (!rows.length) return "";
+  const drop = new Set(dropCols||[]);
+  const cols = Object.keys(rows[0]).filter(c => !drop.has(c));
+  const esc = (v) => {
+    if (v === null || v === undefined) return "";
+    if (typeof v === "object") v = JSON.stringify(v);
+    v = String(v);
+    return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g,'""') + '"' : v;
+  };
+  const lines = [cols.join(",")];
+  for (const row of rows) lines.push(cols.map(c => esc(row[c])).join(","));
+  return lines.join("\r\n");
+}
+
+function downloadCSV(text, name){
+  const blob = new Blob([text], { type:"text/csv;charset=utf-8;" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = name; document.body.appendChild(a); a.click();
+  setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 500);
+}
+
+async function refreshSummary(){
+  setStatus("Counting…");
+  try {
+    const [ev, fl] = await Promise.all([ getCount("flight_events"), getCount("flights_last_known") ]);
+    $("cntEvents").textContent = ev.toLocaleString();
+    $("cntFlights").textContent = fl.toLocaleString();
+    await loadPreview();
+    setStatus("Showing " + $("start").value + " → " + $("end").value + (($("carrier").value)?(" · "+$("carrier").value):"") + (($("airport").value)?(" · "+$("airport").value):""));
+  } catch(e){ setStatus(e.message, true); }
+}
+
+async function loadPreview(){
+  const cols = ["operating_carrier_iata","flight_number","dep_airport_iata","arr_airport_iata","scheduled_dep_utc","status","registration","aircraft_type","obs_count"];
+  const url = REST + "flights_last_known?" + filterQS() + "&select=" + cols.join(",") + "&order=scheduled_dep_utc.asc&limit=50";
+  const r = await fetch(url, { headers: HDRS });
+  const rows = r.ok ? await r.json() : [];
+  const thead = $("preview").querySelector("thead");
+  const tbody = $("preview").querySelector("tbody");
+  const heads = ["Carrier","Flight","From","To","Sched dep (UTC)","Status","Reg","Aircraft","Msgs"];
+  thead.innerHTML = "<tr>" + heads.map(h=>"<th>"+h+"</th>").join("") + "</tr>";
+  tbody.innerHTML = rows.map(x => "<tr>" + cols.map(c => {
+    let v = x[c]==null ? "" : x[c];
+    if (c==="scheduled_dep_utc" && v) v = String(v).replace("T"," ").slice(0,16);
+    return "<td>"+v+"</td>";
+  }).join("") + "</tr>").join("");
+}
+
+async function handleDownload(kind, btn){
+  btn.disabled = true;
+  try {
+    let rows, name, drop;
+    if (kind === "raw"){
+      rows = await fetchAllPaged("flight_events", "*", "id.asc"); name = "cirium_raw_messages.csv"; drop = [];
+    } else if (kind === "parsed"){
+      rows = await fetchAllPaged("flight_events", "*", "id.asc"); name = "cirium_all_flight_entries.csv"; drop = ["raw_payload"];
+    } else {
+      rows = await fetchAllPaged("flights_last_known", "*", "flight_key.asc"); name = "cirium_unique_flights.csv"; drop = [];
+    }
+    if (!rows.length){ setDl("No rows in the selected range.", true); return; }
+    downloadCSV(toCSV(rows, drop), name);
+    setDl("Downloaded " + rows.length.toLocaleString() + " rows → " + name);
+  } catch(e){ setDl(e.message, true); }
+  finally { btn.disabled = false; }
+}
+
+async function populateFilters(){
+  try {
+    const [cr, ap] = await Promise.all([
+      fetch(REST + "rpc/ui_carriers", { method:"POST", headers: Object.assign({}, HDRS, {"Content-Type":"application/json"}), body:"{}" }),
+      fetch(REST + "rpc/ui_airports", { method:"POST", headers: Object.assign({}, HDRS, {"Content-Type":"application/json"}), body:"{}" }),
+    ]);
+    if (cr.ok){ const list = await cr.json(); for(const x of list){ const o=document.createElement("option"); o.value=o.textContent=x.code||x; $("carrier").appendChild(o);} }
+    if (ap.ok){ const list = await ap.json(); for(const x of list){ const o=document.createElement("option"); o.value=o.textContent=x.code||x; $("airport").appendChild(o);} }
+  } catch(e){ /* dropdowns optional */ }
+}
+
+$("apply").addEventListener("click", refreshSummary);
+document.querySelectorAll(".dl button").forEach(b => b.addEventListener("click", () => handleDownload(b.dataset.kind, b)));
+
+initDates();
+populateFilters();
+refreshSummary();
+</script>
+</body>
+</html>
