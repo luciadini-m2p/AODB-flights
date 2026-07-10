@@ -296,16 +296,21 @@ async function getRawCount(){
   return Number(await r.json());
 }
 async function fetchEventsPaged(select){
-  let out = [], offset = 0;
+  // Keyset pagination on the primary key (id) — each page is a fast index seek,
+  // avoiding the offset performance cliff on large exports. `id` is always
+  // included in the select so we can advance the cursor.
+  const sel = select === "*" ? "*" : (select.split(",").includes("id") ? select : "id," + select);
+  let out = [], lastId = 0;
   for(;;){
-    const url = REST + "flight_events?" + filterQS() + "&select=" + select + "&order=id.asc&limit=" + PAGE + "&offset=" + offset;
+    const url = REST + "flight_events?" + filterQS() + "&select=" + sel
+      + "&id=gt." + lastId + "&order=id.asc&limit=" + PAGE;
     const r = await apiFetch(url);
     if (!r.ok) throw new Error("fetch: " + r.status + " " + (await r.text()));
     const rows = await r.json();
     out = out.concat(rows);
     setDl("Fetching… " + out.length.toLocaleString() + " rows");
     if (rows.length < PAGE) break;
-    offset += PAGE;
+    lastId = rows[rows.length - 1].id;
   }
   return out;
 }
