@@ -291,12 +291,9 @@ function callRpc(fn){
 }
 
 async function getRawCount(){
-  const url = REST + "flight_events?" + filterQS() + "&limit=1";
-  const r = await apiFetch(url, { headers:{ Prefer:"count=exact", "Range-Unit":"items", Range:"0-0" } });
+  const r = await callRpc("flights_raw_count_range");
   if (!r.ok) throw new Error("count: " + r.status + " " + (await r.text()));
-  const cr = r.headers.get("content-range") || "";
-  const total = cr.split("/")[1];
-  return total ? parseInt(total,10) : 0;
+  return Number(await r.json());
 }
 async function fetchEventsPaged(select){
   let out = [], offset = 0;
