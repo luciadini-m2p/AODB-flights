@@ -8,20 +8,21 @@
   :root { color-scheme: light; --navy:#1F3864; --blue:#2E75B6; --line:#d9e2f3; --bg:#f7f9fc; }
   * { box-sizing: border-box; }
   body { margin:0; font-family: -apple-system, Segoe UI, Arial, sans-serif; color:#1a1a1a; background:var(--bg); }
-  header { background:var(--navy); color:#fff; padding:20px 28px; }
+  header { background:var(--navy); color:#fff; padding:20px 28px; display:flex; justify-content:space-between; align-items:center; }
   header h1 { margin:0; font-size:20px; }
   header p { margin:6px 0 0; font-size:13px; opacity:.85; }
+  #logout { background:rgba(255,255,255,.15); color:#fff; }
+  #logout:hover { background:rgba(255,255,255,.28); }
   .wrap { max-width:1100px; margin:0 auto; padding:22px 28px 60px; }
   .card { background:#fff; border:1px solid var(--line); border-radius:10px; padding:18px 20px; margin-bottom:18px; }
   .controls { display:flex; flex-wrap:wrap; gap:16px; align-items:flex-end; }
   .field { display:flex; flex-direction:column; gap:5px; }
   .field label { font-size:12px; font-weight:600; color:var(--navy); }
-  .field input[type=date] { padding:8px 10px; border:1px solid #c9d3e6; border-radius:7px; font-size:14px; background:#fff; }
+  .field input[type=date], .field input[type=email], .field input[type=password] { padding:8px 10px; border:1px solid #c9d3e6; border-radius:7px; font-size:14px; background:#fff; }
   button { cursor:pointer; border:none; border-radius:8px; font-size:14px; font-weight:600; padding:10px 16px; }
   .apply { background:var(--blue); color:#fff; }
   .apply:hover { background:#255f96; }
 
-  /* multi-select */
   .ms { position:relative; min-width:180px; }
   .ms-head { display:flex; justify-content:space-between; align-items:center; gap:8px; padding:8px 10px; border:1px solid #c9d3e6; border-radius:7px; background:#fff; font-size:14px; cursor:pointer; }
   .ms-head .ms-caret { color:#889; font-size:11px; }
@@ -53,15 +54,34 @@
   .err { color:#b00020; font-size:13px; }
   .pill { display:inline-block; padding:2px 8px; border-radius:20px; font-size:11px; background:#eef3fb; color:var(--navy); }
   h2 { font-size:15px; color:var(--navy); margin:2px 0 12px; border-bottom:2px solid var(--line); padding-bottom:6px;}
+  .loginwrap { max-width:400px; margin:60px auto; }
+  .loginwrap .field { margin-bottom:14px; }
+  .loginwrap input { width:100%; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Cirium Flight Data — Filter &amp; Download</h1>
-  <p>Live from the Cirium Sky Stream feed. Pick a date range (and optionally carriers / airports), then download as CSV. Read-only.</p>
+  <div>
+    <h1>Cirium Flight Data — Filter &amp; Download</h1>
+    <p>Live from the Cirium Sky Stream feed. Restricted access.</p>
+  </div>
+  <button id="logout" hidden>Log out</button>
 </header>
 
-<div class="wrap">
+<!-- LOGIN VIEW -->
+<div id="login" class="wrap loginwrap" hidden>
+  <div class="card">
+    <h2>Sign in</h2>
+    <p class="muted">Access is limited to invited users.</p>
+    <div class="field"><label for="email">Email</label><input type="email" id="email" autocomplete="username"></div>
+    <div class="field"><label for="password">Password</label><input type="password" id="password" autocomplete="current-password"></div>
+    <button class="apply" id="loginBtn" style="width:100%;">Sign in</button>
+    <div id="loginErr" class="err" style="margin-top:12px;"></div>
+  </div>
+</div>
+
+<!-- APP VIEW -->
+<div id="app" class="wrap" hidden>
   <div class="card">
     <div class="controls">
       <div class="field">
@@ -124,14 +144,14 @@
     <div class="tablewrap"><table id="preview"><thead></thead><tbody></tbody></table></div>
   </div>
 
-  <p class="muted">Data source: Cirium Sky Stream → Supabase. This page has read-only access. Reload to refresh.</p>
+  <p class="muted">Data source: Cirium Sky Stream → Supabase. Read-only, restricted access. Reload to refresh.</p>
 </div>
 
 <script>
 const SUPABASE_URL = "https://cqiglfxbmilumuupcfbe.supabase.co";
 const ANON = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImNxaWdsZnhibWlsdW11dXBjZmJlIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODM1MzA3MTUsImV4cCI6MjA5OTEwNjcxNX0.Nci335D5aU1PAFFN9Qb8KDLsEMh_dFScUJs7qiIiRbE";
 const REST = SUPABASE_URL + "/rest/v1/";
-const HDRS = { apikey: ANON, Authorization: "Bearer " + ANON };
+const AUTH = SUPABASE_URL + "/auth/v1/";
 const PAGE = 1000;
 
 const PARSED_COLS = ["id","ingested_at","received_at","event_id","flight_id","flight_number","call_sign","status","service_type","aircraft_icao","registration","aircraft_address","operating_carrier_iata","operating_carrier_icao","marketing_carrier_iata","marketing_carrier_icao","dep_airport_iata","dep_airport_icao","dep_gate_scheduled","dep_gate_estimated","dep_runway_estimated","dep_gate","dep_terminal","arr_airport_iata","arr_airport_icao","arr_gate_scheduled","arr_gate_estimated","arr_runway_estimated","arr_gate","baggage_claim","scheduled_equipment","scheduled_dep_utc","scheduled_arr_utc","estimated_dep_utc","estimated_arr_utc","actual_dep_utc","actual_arr_utc","tail_number","message_type","published_at","arr_terminal","aircraft_type","flight_key"];
@@ -140,7 +160,40 @@ const $ = (id) => document.getElementById(id);
 const setStatus = (m, err) => { const e=$("status"); e.textContent=m; e.className = err ? "err" : "muted"; };
 const setDl = (m, err) => { const e=$("dlstatus"); e.textContent=m; e.className = err ? "err" : "muted"; };
 
-/* ---------- reusable checkbox multi-select ---------- */
+/* ---------------- auth ---------------- */
+let session = null;
+function loadSession(){ try { session = JSON.parse(localStorage.getItem("cirium_session") || "null"); } catch(e){ session = null; } }
+function saveSession(d){ session = { access_token:d.access_token, refresh_token:d.refresh_token, expires_at: Date.now() + (d.expires_in||3600)*1000 }; localStorage.setItem("cirium_session", JSON.stringify(session)); }
+function clearSession(){ session = null; localStorage.removeItem("cirium_session"); }
+function authHeaders(){ return { apikey: ANON, Authorization: "Bearer " + (session ? session.access_token : ANON) }; }
+
+async function doLogin(email, password){
+  const r = await fetch(AUTH + "token?grant_type=password", { method:"POST", headers:{ apikey:ANON, "Content-Type":"application/json" }, body: JSON.stringify({ email, password }) });
+  const d = await r.json();
+  if (!r.ok) throw new Error(d.error_description || d.msg || d.error || ("Sign-in failed (" + r.status + ")"));
+  saveSession(d);
+}
+async function refreshToken(){
+  if (!session || !session.refresh_token) return false;
+  const r = await fetch(AUTH + "token?grant_type=refresh_token", { method:"POST", headers:{ apikey:ANON, "Content-Type":"application/json" }, body: JSON.stringify({ refresh_token: session.refresh_token }) });
+  if (!r.ok){ clearSession(); return false; }
+  saveSession(await r.json());
+  return true;
+}
+async function apiFetch(url, opts){
+  opts = opts || {};
+  opts.headers = Object.assign({}, opts.headers || {}, authHeaders());
+  let r = await fetch(url, opts);
+  if (r.status === 401){
+    if (await refreshToken()){ opts.headers = Object.assign({}, opts.headers, authHeaders()); r = await fetch(url, opts); }
+    else { showLogin(); throw new Error("Your session expired — please sign in again."); }
+  }
+  return r;
+}
+function showLogin(){ $("app").hidden = true; $("logout").hidden = true; $("login").hidden = false; }
+function showApp(){ $("login").hidden = true; $("app").hidden = false; $("logout").hidden = false; }
+
+/* ---------------- multi-select ---------------- */
 function MultiSelect(rootId, allLabel){
   const root = $(rootId);
   root.innerHTML =
@@ -202,11 +255,9 @@ document.addEventListener("click", (e) => {
   document.querySelectorAll(".ms").forEach(ms => { if (!ms.contains(e.target)) ms.querySelector(".ms-panel").hidden = true; });
 });
 
-const CARRIER = MultiSelect("ms-carrier", "All marketing carriers");
-const DEP = MultiSelect("ms-dep", "All departure airports");
-const ARR = MultiSelect("ms-arr", "All arrival airports");
+let CARRIER, DEP, ARR;
 
-/* ---------- dates ---------- */
+/* ---------------- dates ---------------- */
 function fmt(d){ return d.toISOString().slice(0,10); }
 function initDates(){
   const today = new Date();
@@ -218,7 +269,7 @@ function initDates(){
 function startISO(){ const s=$("start").value; return s ? s + "T00:00:00Z" : null; }
 function endISO(){ const e=$("end").value; if(!e) return null; const d=new Date(e); d.setDate(d.getDate()+1); return fmt(d) + "T00:00:00Z"; }
 
-/* ---------- filters ---------- */
+/* ---------------- filters ---------------- */
 function inParam(field, vals){ return vals.length ? field + "=in.(" + vals.map(encodeURIComponent).join(",") + ")" : null; }
 function filterQS(){
   const parts = [];
@@ -236,23 +287,22 @@ function rpcBody(){
     p_carriers:arrOrNull(CARRIER.getValues()), p_dep:arrOrNull(DEP.getValues()), p_arr:arrOrNull(ARR.getValues()) });
 }
 function callRpc(fn){
-  return fetch(REST + "rpc/" + fn, { method:"POST", headers: Object.assign({}, HDRS, {"Content-Type":"application/json"}), body: rpcBody() });
+  return apiFetch(REST + "rpc/" + fn, { method:"POST", headers:{ "Content-Type":"application/json" }, body: rpcBody() });
 }
 
 async function getRawCount(){
   const url = REST + "flight_events?" + filterQS() + "&limit=1";
-  const r = await fetch(url, { headers: Object.assign({}, HDRS, { Prefer:"count=exact", "Range-Unit":"items", Range:"0-0" }) });
+  const r = await apiFetch(url, { headers:{ Prefer:"count=exact", "Range-Unit":"items", Range:"0-0" } });
   if (!r.ok) throw new Error("count: " + r.status + " " + (await r.text()));
   const cr = r.headers.get("content-range") || "";
   const total = cr.split("/")[1];
   return total ? parseInt(total,10) : 0;
 }
-
 async function fetchEventsPaged(select){
   let out = [], offset = 0;
   for(;;){
     const url = REST + "flight_events?" + filterQS() + "&select=" + select + "&order=id.asc&limit=" + PAGE + "&offset=" + offset;
-    const r = await fetch(url, { headers: HDRS });
+    const r = await apiFetch(url);
     if (!r.ok) throw new Error("fetch: " + r.status + " " + (await r.text()));
     const rows = await r.json();
     out = out.concat(rows);
@@ -362,21 +412,47 @@ async function handleDownload(kind, btn){
 
 async function populateFilters(){
   try {
-    const [cr, ap] = await Promise.all([
-      fetch(REST + "rpc/ui_carriers", { method:"POST", headers: Object.assign({}, HDRS, {"Content-Type":"application/json"}), body:"{}" }),
-      fetch(REST + "rpc/ui_airports", { method:"POST", headers: Object.assign({}, HDRS, {"Content-Type":"application/json"}), body:"{}" }),
-    ]);
+    const [cr, ap] = await Promise.all([ callRpc0("ui_carriers"), callRpc0("ui_airports") ]);
     if (cr.ok){ const list = (await cr.json()).map(x => x.code || x); CARRIER.setOptions(list); }
     if (ap.ok){ const list = (await ap.json()).map(x => x.code || x); DEP.setOptions(list); ARR.setOptions(list); }
   } catch(e){ /* dropdowns optional */ }
 }
+// RPC with empty body (for the no-arg filter helpers)
+function callRpc0(fn){
+  return apiFetch(REST + "rpc/" + fn, { method:"POST", headers:{ "Content-Type":"application/json" }, body:"{}" });
+}
 
-$("apply").addEventListener("click", refreshSummary);
-document.querySelectorAll(".dl button").forEach(b => b.addEventListener("click", () => handleDownload(b.dataset.kind, b)));
+async function startApp(){
+  showApp();
+  CARRIER = MultiSelect("ms-carrier", "All marketing carriers");
+  DEP = MultiSelect("ms-dep", "All departure airports");
+  ARR = MultiSelect("ms-arr", "All arrival airports");
+  $("apply").addEventListener("click", refreshSummary);
+  document.querySelectorAll(".dl button").forEach(b => b.addEventListener("click", () => handleDownload(b.dataset.kind, b)));
+  initDates();
+  await populateFilters();
+  refreshSummary();
+}
 
-initDates();
-populateFilters();
-refreshSummary();
+/* ---------------- boot ---------------- */
+$("loginBtn").addEventListener("click", async () => {
+  $("loginErr").textContent = "";
+  $("loginBtn").disabled = true;
+  try { await doLogin($("email").value.trim(), $("password").value); await startApp(); }
+  catch(e){ $("loginErr").textContent = e.message; }
+  finally { $("loginBtn").disabled = false; }
+});
+$("password").addEventListener("keydown", (e) => { if (e.key === "Enter") $("loginBtn").click(); });
+$("logout").addEventListener("click", () => { clearSession(); location.reload(); });
+
+(async function boot(){
+  loadSession();
+  if (session){
+    if (session.expires_at && Date.now() > session.expires_at - 60000){ await refreshToken(); }
+    if (session){ await startApp(); return; }
+  }
+  showLogin();
+})();
 </script>
 </body>
 </html>
