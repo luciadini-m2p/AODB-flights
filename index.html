@@ -316,8 +316,11 @@ async function fetchEventsPaged(select){
 }
 
 function lastKnown(rows){
+  // Dedupe on flight identity WITHOUT registration (carrier|flight|sobt), so a
+  // tail swap collapses to one row (registration shows the most recent tail).
+  const legOf = (fk) => fk.split("|").slice(0,3).join("|");
   const groups = {};
-  for (const r of rows){ if (r.flight_key == null) continue; (groups[r.flight_key] ||= []).push(r); }
+  for (const r of rows){ if (r.flight_key == null) continue; const k = legOf(r.flight_key); (groups[k] ||= []).push(r); }
   const out = [];
   for (const key in groups){
     const g = groups[key].slice().sort((a,b) => (a.received_at < b.received_at ? 1 : (a.received_at > b.received_at ? -1 : 0)));
@@ -335,25 +338,46 @@ function lastKnown(rows){
   return out;
 }
 
-function toCSV(rows){
-  if (!rows.length) return "";
-  const cols = Object.keys(rows[0]);
-  const esc = (v) => {
-    if (v === null || v === undefined) return "";
-    if (typeof v === "object") v = JSON.stringify(v);
-    v = String(v);
-    return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g,'""') + '"' : v;
-  };
-  const lines = [cols.join(",")];
-  for (const row of rows) lines.push(cols.map(c => esc(row[c])).join(","));
-  return lines.join("\r\n");
+function csvEsc(v){
+  if (v === null || v === undefined) return "";
+  if (typeof v === "object") v = JSON.stringify(v);
+  v = String(v);
+  return /[",\n\r]/.test(v) ? '"' + v.replace(/"/g,'""') + '"' : v;
 }
-function downloadCSV(text, name){
-  const blob = new Blob([text], { type:"text/csv;charset=utf-8;" });
+function rowsToText(rows, cols){
+  let s = "";
+  for (const row of rows) s += cols.map(c => csvEsc(row[c])).join(",") + "\r\n";
+  return s;
+}
+// Build the file as an array of string chunks — a Blob assembles them without
+// ever creating one giant string (avoids the browser's max-string-length crash).
+function downloadBlob(chunks, name){
+  const blob = new Blob(chunks, { type:"text/csv;charset=utf-8;" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
   a.download = name; document.body.appendChild(a); a.click();
-  setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 500);
+  setTimeout(()=>{ URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+// Stream flight_events pages straight into CSV chunks (used for raw + parsed) so
+// we never hold the whole file as one string.
+async function streamDownload(select, cols, name){
+  const chunks = []; let header = false, total = 0, lastId = 0, useCols = cols;
+  for(;;){
+    const url = REST + "flight_events?" + filterQS() + "&select=" + select + "&id=gt." + lastId + "&order=id.asc&limit=" + PAGE;
+    const r = await apiFetch(url);
+    if (!r.ok) throw new Error("fetch: " + r.status + " " + (await r.text()));
+    const rows = await r.json();
+    if (rows.length){
+      if (!header){ useCols = cols || Object.keys(rows[0]); chunks.push(useCols.join(",") + "\r\n"); header = true; }
+      chunks.push(rowsToText(rows, useCols));
+      total += rows.length; setDl("Fetching… " + total.toLocaleString() + " rows");
+      lastId = rows[rows.length - 1].id;
+    }
+    if (rows.length < PAGE) break;
+  }
+  if (!total){ setDl("No rows in the selected range.", true); return; }
+  downloadBlob(chunks, name);
+  setDl("Downloaded " + total.toLocaleString() + " rows → " + name);
 }
 
 function selectionSummary(){
@@ -366,15 +390,17 @@ function selectionSummary(){
 }
 
 async function refreshSummary(){
-  setStatus("Loading…");
-  try {
-    const [raw, uniqRes] = await Promise.all([ getRawCount(), callRpc("flights_count_range") ]);
-    $("cntEvents").textContent = raw.toLocaleString();
-    const uniq = uniqRes.ok ? await uniqRes.json() : 0;
-    $("cntFlights").textContent = Number(uniq).toLocaleString();
-    await loadPreview();
-    setStatus("Showing " + $("start").value + " → " + $("end").value + selectionSummary());
-  } catch(e){ setStatus(e.message, true); }
+  setStatus("Showing " + $("start").value + " → " + $("end").value + selectionSummary() + " — downloads always reflect the full selection.");
+  // Each summary metric is best-effort: if the totals time out on a small
+  // database plan, show "n/a" but keep the page (and downloads) fully usable.
+  $("cntEvents").textContent = "…"; $("cntFlights").textContent = "…";
+  getRawCount()
+    .then(n => { $("cntEvents").textContent = n.toLocaleString(); })
+    .catch(() => { $("cntEvents").textContent = "n/a"; });
+  callRpc("flights_count_range")
+    .then(async r => { $("cntFlights").textContent = r.ok ? Number(await r.json()).toLocaleString() : "n/a"; })
+    .catch(() => { $("cntFlights").textContent = "n/a"; });
+  loadPreview().catch(() => {});
 }
 
 async function loadPreview(){
@@ -395,19 +421,19 @@ async function loadPreview(){
 async function handleDownload(kind, btn){
   btn.disabled = true;
   try {
-    let rows, name;
     if (kind === "raw"){
-      rows = await fetchEventsPaged("*"); name = "cirium_raw_messages.csv";
+      await streamDownload("*", null, "cirium_raw_messages.csv");
     } else if (kind === "parsed"){
-      rows = await fetchEventsPaged(PARSED_COLS.join(",")); name = "cirium_all_flight_entries.csv";
+      await streamDownload(PARSED_COLS.join(","), PARSED_COLS, "cirium_all_flight_entries.csv");
     } else {
       setDl("Fetching messages to build unique set…");
       const msgs = await fetchEventsPaged(PARSED_COLS.join(","));
-      rows = lastKnown(msgs); name = "cirium_unique_flights.csv";
+      const rows = lastKnown(msgs);
+      if (!rows.length){ setDl("No rows in the selected range.", true); return; }
+      const cols = Object.keys(rows[0]);
+      downloadBlob([cols.join(",") + "\r\n", rowsToText(rows, cols)], "cirium_unique_flights.csv");
+      setDl("Downloaded " + rows.length.toLocaleString() + " rows → cirium_unique_flights.csv");
     }
-    if (!rows.length){ setDl("No rows in the selected range.", true); return; }
-    downloadCSV(toCSV(rows), name);
-    setDl("Downloaded " + rows.length.toLocaleString() + " rows → " + name);
   } catch(e){ setDl(e.message, true); }
   finally { btn.disabled = false; }
 }
