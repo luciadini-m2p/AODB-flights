@@ -260,11 +260,12 @@ let CARRIER, DEP, ARR;
 /* ---------------- dates ---------------- */
 function fmt(d){ return d.toISOString().slice(0,10); }
 function initDates(){
+  // Default to a short recent window so the page loads fast even as the table
+  // grows; users can widen the range (wider = slower to total on a small DB plan).
   const today = new Date();
-  const start = new Date(today); start.setDate(today.getDate()-7);
-  const end = new Date(today); end.setDate(today.getDate()+7);
+  const start = new Date(today); start.setDate(today.getDate()-2);
   $("start").value = fmt(start);
-  $("end").value = fmt(end);
+  $("end").value = fmt(today);
 }
 function startISO(){ const s=$("start").value; return s ? s + "T00:00:00Z" : null; }
 function endISO(){ const e=$("end").value; if(!e) return null; const d=new Date(e); d.setDate(d.getDate()+1); return fmt(d) + "T00:00:00Z"; }
